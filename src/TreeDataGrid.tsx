@@ -1,8 +1,8 @@
-import { useCallback, useMemo } from 'react';
-import type { Key } from 'react';
+import { useCallback, useMemo } from "react";
+import type { Key } from "react";
 
-import { useLatestFunc } from './hooks';
-import { assertIsValidKeyGetter, getLeftRightKey } from './utils';
+import { useLatestFunc } from "./hooks";
+import { assertIsValidKeyGetter, getLeftRightKey } from "./utils";
 import type {
   CellClipboardEvent,
   CellCopyArgs,
@@ -15,26 +15,35 @@ import type {
   Omit,
   RenderRowProps,
   RowHeightArgs,
-  RowsChangeData
-} from './types';
-import { renderToggleGroup } from './cellRenderers';
-import { SELECT_COLUMN_KEY } from './Columns';
-import { DataGrid } from './DataGrid';
-import type { DataGridProps } from './DataGrid';
-import { useDefaultRenderers } from './DataGridDefaultRenderersContext';
-import GroupedRow from './GroupRow';
-import { defaultRenderRow } from './Row';
+  RowsChangeData,
+} from "./types";
+import { renderToggleGroup } from "./cellRenderers";
+import { SELECT_COLUMN_KEY } from "./Columns";
+import { DataGrid } from "./DataGrid";
+import type { DataGridProps } from "./DataGrid";
+import { useDefaultRenderers } from "./DataGridDefaultRenderersContext";
+import GroupedRow from "./GroupRow";
+import { defaultRenderRow } from "./Row";
 
-export interface TreeDataGridProps<R, SR = unknown, K extends Key = Key> extends Omit<
+export interface TreeDataGridProps<
+  R,
+  SR = unknown,
+  K extends Key = Key,
+> extends Omit<
   DataGridProps<R, SR, K>,
-  'columns' | 'role' | 'aria-rowcount' | 'rowHeight' | 'onFill' | 'isRowSelectionDisabled'
+  | "columns"
+  | "role"
+  | "aria-rowcount"
+  | "rowHeight"
+  | "onFill"
+  | "isRowSelectionDisabled"
 > {
   columns: readonly Column<NoInfer<R>, NoInfer<SR>>[];
   rowHeight?: Maybe<number | ((args: RowHeightArgs<NoInfer<R>>) => number)>;
   groupBy: readonly string[];
   rowGrouper: (
     rows: readonly NoInfer<R>[],
-    columnKey: string
+    columnKey: string,
   ) => Record<string, readonly NoInfer<R>[]>;
   expandedGroupIds: ReadonlySet<unknown>;
   onExpandedGroupIdsChange: (expandedGroupIds: Set<unknown>) => void;
@@ -70,7 +79,8 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
   ...props
 }: TreeDataGridProps<R, SR, K>) {
   const defaultRenderers = useDefaultRenderers<R, SR>();
-  const rawRenderRow = renderers?.renderRow ?? defaultRenderers?.renderRow ?? defaultRenderRow;
+  const rawRenderRow =
+    renderers?.renderRow ?? defaultRenderers?.renderRow ?? defaultRenderRow;
   const headerAndTopSummaryRowsCount = 1 + (props.topSummaryRows?.length ?? 0);
   const { leftKey, rightKey } = getLeftRightKey(props.direction);
   const toggleGroupLatest = useLatestFunc(toggleGroup);
@@ -78,11 +88,8 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
 
   const { columns, groupBy } = useMemo(() => {
     const columns = rawColumns.toSorted(({ key: aKey }, { key: bKey }) => {
-      // Sort select column first:
       if (aKey === SELECT_COLUMN_KEY) return -1;
       if (bKey === SELECT_COLUMN_KEY) return 1;
-
-      // Sort grouped columns second, following the groupBy order:
       if (rawGroupBy.includes(aKey)) {
         if (rawGroupBy.includes(bKey)) {
           return rawGroupBy.indexOf(aKey) - rawGroupBy.indexOf(bKey);
@@ -90,8 +97,6 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
         return -1;
       }
       if (rawGroupBy.includes(bKey)) return 1;
-
-      // Sort other columns last:
       return 0;
     });
 
@@ -102,9 +107,14 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
         columns[index] = {
           ...column,
           frozen: true,
-          renderCell: () => null,
+          renderCell: (cellProps) => {
+            // On GroupRow, the cell is handled by renderGroupCell — hide it here.
+            // On detail rows, use the column's original renderCell (or fall back to nothing).
+            if ("groupKey" in (cellProps.row as object)) return null;
+            return column.renderCell ? column.renderCell(cellProps) : null;
+          },
           renderGroupCell: column.renderGroupCell ?? renderToggleGroup,
-          editable: false
+          editable: false,
         };
       }
     }
@@ -118,125 +128,185 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
     const groupRows = (
       rows: readonly R[],
       [groupByKey, ...remainingGroupByKeys]: readonly string[],
-      startRowIndex: number
+      startRowIndex: number,
     ): [Readonly<GroupByDictionary<R>>, number] => {
       let groupRowsCount = 0;
       const groups: GroupByDictionary<R> = {};
-      for (const [key, childRows] of Object.entries(rowGrouper(rows, groupByKey))) {
-        // Recursively group each parent group
+      for (const [key, childRows] of Object.entries(
+        rowGrouper(rows, groupByKey),
+      )) {
         const [childGroups, childRowsCount] =
           remainingGroupByKeys.length === 0
             ? [childRows, childRows.length]
-            : groupRows(childRows, remainingGroupByKeys, startRowIndex + groupRowsCount + 1); // 1 for parent row
-        groups[key] = { childRows, childGroups, startRowIndex: startRowIndex + groupRowsCount };
-        groupRowsCount += childRowsCount + 1; // 1 for parent row
+            : groupRows(
+                childRows,
+                remainingGroupByKeys,
+                startRowIndex + groupRowsCount + 1,
+              );
+        groups[key] = {
+          childRows,
+          childGroups,
+          startRowIndex: startRowIndex + groupRowsCount,
+        };
+        groupRowsCount += childRowsCount + 1;
       }
-
       return [groups, groupRowsCount];
     };
 
     return groupRows(rawRows, groupBy, 0);
   }, [groupBy, rowGrouper, rawRows]);
 
-  const [rows, isGroupRow] = useMemo((): [
-    readonly (R | GroupRow<R>)[],
-    (row: R | GroupRow<R>) => row is GroupRow<R>
-  ] => {
-    const allGroupRows = new Set<unknown>();
-    if (!groupedRows) return [rawRows, isGroupRow];
-
-    const flattenedRows: (R | GroupRow<R>)[] = [];
-
-    const expandGroup = (
-      rows: GroupByDictionary<R> | readonly R[],
-      parentId: string | undefined,
-      level: number
-    ): void => {
-      if (isReadonlyArray(rows)) {
-        flattenedRows.push(...rows);
-        return;
+  // --- OPTIMISATION 1 ---
+  // On construit en une seule passe :
+  //   - flattenedRows  : le tableau de lignes affiché
+  //   - allGroupRows   : Set pour isGroupRow en O(1)
+  //   - rowIndexMap    : Map<row, index> pour remplacer tous les indexOf O(n)
+  //   - parentMap      : Map<row, [GroupRow, rowIdx]> pour getParentRowAndIndex en O(1)
+  //   - rawRowIndexMap : Map<R, index> dans rawRows pour handleRowsChange en O(1)
+  const [rows, isGroupRow, rowIndexMap, parentMap, rawRowIndexMap] =
+    useMemo((): [
+      readonly (R | GroupRow<R>)[],
+      (row: R | GroupRow<R>) => row is GroupRow<R>,
+      Map<R | GroupRow<R>, number>,
+      Map<R | GroupRow<R>, readonly [GroupRow<R>, number]>,
+      Map<R, number>,
+    ] => {
+      // Index rawRows once — O(n)
+      const rawRowIndexMap = new Map<R, number>();
+      for (let i = 0; i < rawRows.length; i++) {
+        rawRowIndexMap.set(rawRows[i], i);
       }
-      Object.keys(rows).forEach((groupKey, posInSet, keys) => {
-        const id = groupIdGetter(groupKey, parentId);
-        const isExpanded = expandedGroupIds.has(id);
-        const { childRows, childGroups, startRowIndex } = rows[groupKey];
 
-        const groupRow: GroupRow<R> = {
-          id,
-          parentId,
-          groupKey,
-          isExpanded,
-          childRows,
-          level,
-          posInSet,
-          startRowIndex,
-          setSize: keys.length
-        };
-        flattenedRows.push(groupRow);
-        allGroupRows.add(groupRow);
+      const allGroupRows = new Set<unknown>();
 
-        if (isExpanded) {
-          expandGroup(childGroups, id, level + 1);
+      if (!groupedRows) {
+        const rowIndexMap = new Map<R | GroupRow<R>, number>();
+        for (let i = 0; i < rawRows.length; i++) rowIndexMap.set(rawRows[i], i);
+        return [rawRows, isGroupRow, rowIndexMap, new Map(), rawRowIndexMap];
+      }
+
+      const flattenedRows: (R | GroupRow<R>)[] = [];
+      const rowIndexMap = new Map<R | GroupRow<R>, number>();
+      const parentMap = new Map<
+        R | GroupRow<R>,
+        readonly [GroupRow<R>, number]
+      >();
+
+      const expandGroup = (
+        rows: GroupByDictionary<R> | readonly R[],
+        parentId: string | undefined,
+        level: number,
+        parentGroupRow: GroupRow<R> | undefined,
+      ): void => {
+        if (isReadonlyArray(rows)) {
+          for (const row of rows) {
+            const idx = flattenedRows.length;
+            rowIndexMap.set(row, idx);
+            flattenedRows.push(row);
+            if (parentGroupRow !== undefined) {
+              parentMap.set(row, [
+                parentGroupRow,
+                rowIndexMap.get(parentGroupRow)!,
+              ] as const);
+            }
+          }
+          return;
         }
-      });
-    };
+        Object.keys(rows).forEach((groupKey, posInSet, keys) => {
+          const id = groupIdGetter(groupKey, parentId);
+          const isExpanded = expandedGroupIds.has(id);
+          const { childRows, childGroups, startRowIndex } = rows[groupKey];
 
-    expandGroup(groupedRows, undefined, 0);
-    return [flattenedRows, isGroupRow];
+          const groupRow: GroupRow<R> = {
+            id,
+            parentId,
+            groupKey,
+            isExpanded,
+            childRows,
+            level,
+            posInSet,
+            startRowIndex,
+            setSize: keys.length,
+          };
 
-    function isGroupRow(row: R | GroupRow<R>): row is GroupRow<R> {
-      return allGroupRows.has(row);
-    }
-  }, [expandedGroupIds, groupedRows, rawRows, groupIdGetter]);
+          const idx = flattenedRows.length;
+          flattenedRows.push(groupRow);
+          allGroupRows.add(groupRow);
+          rowIndexMap.set(groupRow, idx);
+
+          if (parentGroupRow !== undefined) {
+            parentMap.set(groupRow, [
+              parentGroupRow,
+              rowIndexMap.get(parentGroupRow)!,
+            ] as const);
+          }
+
+          if (isExpanded) {
+            expandGroup(childGroups, id, level + 1, groupRow);
+          }
+        });
+      };
+
+      expandGroup(groupedRows, undefined, 0, undefined);
+      return [
+        flattenedRows,
+        isGroupRow,
+        rowIndexMap,
+        parentMap,
+        rawRowIndexMap,
+      ];
+
+      function isGroupRow(row: R | GroupRow<R>): row is GroupRow<R> {
+        return allGroupRows.has(row);
+      }
+    }, [expandedGroupIds, groupedRows, rawRows, groupIdGetter]);
 
   const rowHeight = useMemo(() => {
-    if (typeof rawRowHeight === 'function') {
+    if (typeof rawRowHeight === "function") {
       return (row: R | GroupRow<R>): number => {
         if (isGroupRow(row)) {
-          return rawRowHeight({ type: 'GROUP', row });
+          return rawRowHeight({ type: "GROUP", row });
         }
-        return rawRowHeight({ type: 'ROW', row });
+        return rawRowHeight({ type: "ROW", row });
       };
     }
-
     return rawRowHeight;
   }, [isGroupRow, rawRowHeight]);
 
+  // --- OPTIMISATION 2 ---
+  // getParentRowAndIndex : O(1) via la Map au lieu de O(n) avec indexOf + boucle
   const getParentRowAndIndex = useCallback(
     (row: R | GroupRow<R>) => {
-      const rowIdx = rows.indexOf(row);
-      for (let i = rowIdx - 1; i >= 0; i--) {
-        const parentRow = rows[i];
-        if (isGroupRow(parentRow) && (!isGroupRow(row) || row.parentId === parentRow.id)) {
-          return [parentRow, i] as const;
-        }
-      }
-
-      return undefined;
+      return parentMap.get(row) as readonly [GroupRow<R>, number] | undefined;
     },
-    [isGroupRow, rows]
+    [parentMap],
   );
 
+  // --- OPTIMISATION 3 ---
+  // rowKeyGetter : O(1) via rowIndexMap au lieu de O(n) indexOf
   const rowKeyGetter = useCallback(
     (row: R | GroupRow<R>) => {
       if (isGroupRow(row)) {
         return row.id;
       }
 
-      if (typeof rawRowKeyGetter === 'function') {
+      if (typeof rawRowKeyGetter === "function") {
         return rawRowKeyGetter(row);
       }
 
       const parentRowAndIndex = getParentRowAndIndex(row);
       if (parentRowAndIndex !== undefined) {
         const { startRowIndex, childRows } = parentRowAndIndex[0];
-        const groupIndex = childRows.indexOf(row);
+        // O(1) : on connaît l'index global, on en déduit la position dans childRows
+        const globalIdx = rowIndexMap.get(row)!;
+        const parentIdx = parentRowAndIndex[1];
+        const groupIndex = globalIdx - parentIdx - 1;
         return startRowIndex + groupIndex + 1;
       }
 
-      return rows.indexOf(row);
+      return rowIndexMap.get(row) ?? -1;
     },
-    [getParentRowAndIndex, isGroupRow, rawRowKeyGetter, rows]
+    [getParentRowAndIndex, isGroupRow, rawRowKeyGetter, rowIndexMap],
   );
 
   const selectedRows = useMemo((): Maybe<ReadonlySet<Key>> => {
@@ -247,9 +317,8 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
     const selectedRows = new Set<Key>(rawSelectedRows);
     for (const row of rows) {
       if (isGroupRow(row)) {
-        // select parent row if all the children are selected
         const isGroupRowSelected = row.childRows.every((cr) =>
-          rawSelectedRows.has(rawRowKeyGetter(cr))
+          rawSelectedRows.has(rawRowKeyGetter(cr)),
         );
         if (isGroupRowSelected) {
           selectedRows.add(row.id);
@@ -270,7 +339,6 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
       const key = rowKeyGetter(row);
       if (selectedRows?.has(key) && !newSelectedRows.has(key)) {
         if (isGroupRow(row)) {
-          // select all children if the parent row is selected
           for (const cr of row.childRows) {
             newRawSelectedRows.delete(rawRowKeyGetter(cr));
           }
@@ -279,7 +347,6 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
         }
       } else if (!selectedRows?.has(key) && newSelectedRows.has(key)) {
         if (isGroupRow(row)) {
-          // unselect all children if the parent row is unselected
           for (const cr of row.childRows) {
             newRawSelectedRows.add(rawRowKeyGetter(cr));
           }
@@ -292,11 +359,14 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
     rawOnSelectedRowsChange(newRawSelectedRows);
   }
 
-  function handleKeyDown(args: CellKeyDownArgs<R, SR>, event: CellKeyboardEvent) {
+  function handleKeyDown(
+    args: CellKeyDownArgs<R, SR>,
+    event: CellKeyboardEvent,
+  ) {
     rawOnCellKeyDown?.(args, event);
     if (event.isGridDefaultPrevented()) return;
 
-    if (args.mode === 'EDIT') return;
+    if (args.mode === "EDIT") return;
     const { column, rowIdx, setActivePosition } = args;
     const idx = column?.idx ?? -1;
     const row = rows[rowIdx];
@@ -304,19 +374,20 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
     if (!isGroupRow(row)) return;
     if (
       idx === -1 &&
-      // Collapse the current group row if it is focused and is in expanded state
       ((event.key === leftKey && row.isExpanded) ||
-        // Expand the current group row if it is focused and is in collapsed state
         (event.key === rightKey && !row.isExpanded))
     ) {
-      // prevent scrolling
       event.preventDefault();
       event.preventGridDefault();
       toggleGroup(row.id);
     }
 
-    // If a group row is focused, and it is collapsed, move to the parent group row (if there is one).
-    if (idx === -1 && event.key === leftKey && !row.isExpanded && row.level !== 0) {
+    if (
+      idx === -1 &&
+      event.key === leftKey &&
+      !row.isExpanded &&
+      row.level !== 0
+    ) {
       const parentRowAndIndex = getParentRowAndIndex(row);
       if (parentRowAndIndex !== undefined) {
         event.preventGridDefault();
@@ -325,10 +396,9 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
     }
   }
 
-  // Prevent copy/paste on group rows
   function handleCellCopy(
     { row, column }: CellCopyArgs<NoInfer<R>, NoInfer<SR>>,
-    event: CellClipboardEvent
+    event: CellClipboardEvent,
   ) {
     if (!isGroupRow(row)) {
       rawOnCellCopy?.({ row, column }, event);
@@ -337,24 +407,29 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
 
   function handleCellPaste(
     { row, column }: CellPasteArgs<NoInfer<R>, NoInfer<SR>>,
-    event: CellClipboardEvent
+    event: CellClipboardEvent,
   ) {
     return isGroupRow(row) ? row : rawOnCellPaste!({ row, column }, event);
   }
 
-  function handleRowsChange(updatedRows: R[], { indexes, column }: RowsChangeData<R, SR>) {
+  // --- OPTIMISATION 4 ---
+  // handleRowsChange : O(1) via rawRowIndexMap au lieu de O(n) indexOf
+  function handleRowsChange(
+    updatedRows: R[],
+    { indexes, column }: RowsChangeData<R, SR>,
+  ) {
     if (!onRowsChange) return;
     const updatedRawRows = [...rawRows];
     const rawIndexes: number[] = [];
     for (const index of indexes) {
-      const rawIndex = rawRows.indexOf(rows[index] as R);
-      updatedRawRows[rawIndex] = updatedRows[index];
-      rawIndexes.push(rawIndex);
+      const row = rows[index] as R;
+      const rawIndex = rawRowIndexMap.get(row) ?? -1;
+      if (rawIndex !== -1) {
+        updatedRawRows[rawIndex] = updatedRows[index];
+        rawIndexes.push(rawIndex);
+      }
     }
-    onRowsChange(updatedRawRows, {
-      indexes: rawIndexes,
-      column
-    });
+    onRowsChange(updatedRawRows, { indexes: rawIndexes, column });
   }
 
   function toggleGroup(groupId: unknown) {
@@ -382,7 +457,7 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
       isRowSelectionDisabled,
       isTreeGrid,
       ...rowProps
-    }: RenderRowProps<R, SR>
+    }: RenderRowProps<R, SR>,
   ) {
     if (isGroupRow(row)) {
       const { startRowIndex } = row;
@@ -398,17 +473,22 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
       );
     }
 
-    let ariaRowIndex = rowProps['aria-rowindex'];
+    // --- OPTIMISATION 5 ---
+    // ariaRowIndex : O(1) via parentMap + rowIndexMap au lieu de childRows.indexOf O(n)
+    let ariaRowIndex = rowProps["aria-rowindex"];
     const parentRowAndIndex = getParentRowAndIndex(row);
     if (parentRowAndIndex !== undefined) {
-      const { startRowIndex, childRows } = parentRowAndIndex[0];
-      const groupIndex = childRows.indexOf(row);
-      ariaRowIndex = startRowIndex + headerAndTopSummaryRowsCount + groupIndex + 2;
+      const { startRowIndex } = parentRowAndIndex[0];
+      const globalIdx = rowIndexMap.get(row)!;
+      const parentIdx = parentRowAndIndex[1];
+      const groupIndex = globalIdx - parentIdx - 1;
+      ariaRowIndex =
+        startRowIndex + headerAndTopSummaryRowsCount + groupIndex + 2;
     }
 
     return rawRenderRow(key, {
       ...rowProps,
-      'aria-rowindex': ariaRowIndex,
+      "aria-rowindex": ariaRowIndex,
       row,
       rowClass,
       onCellMouseDown,
@@ -419,7 +499,7 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
       draggedOverCellIdx,
       activeCellEditor,
       isRowSelectionDisabled,
-      isTreeGrid
+      isTreeGrid,
     });
   }
 
@@ -428,10 +508,13 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
       {...props}
       role="treegrid"
       aria-rowcount={
-        rowsCount + 1 + (props.topSummaryRows?.length ?? 0) + (props.bottomSummaryRows?.length ?? 0)
+        rowsCount +
+        1 +
+        (props.topSummaryRows?.length ?? 0) +
+        (props.bottomSummaryRows?.length ?? 0)
       }
       columns={columns}
-      rows={rows as R[]} // TODO: check types
+      rows={rows as R[]}
       rowHeight={rowHeight}
       rowKeyGetter={rowKeyGetter}
       onRowsChange={handleRowsChange}
@@ -442,7 +525,7 @@ export function TreeDataGrid<R, SR = unknown, K extends Key = Key>({
       onCellPaste={rawOnCellPaste ? handleCellPaste : undefined}
       renderers={{
         ...renderers,
-        renderRow
+        renderRow,
       }}
     />
   );
