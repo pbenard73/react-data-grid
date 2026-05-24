@@ -1,6 +1,5 @@
 /.cache
 /.claude
-/lib
 /node_modules
 
 npm-debug.log
